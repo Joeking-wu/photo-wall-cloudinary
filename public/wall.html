@@ -11,19 +11,19 @@
     .layer{
       position:absolute; inset:0;
       display:flex; align-items:center; justify-content:center;
-      will-change: transform, opacity;
       opacity:0;
       transform: translate3d(0,0,0) scale(1);
+      will-change: transform, opacity;
     }
-    .layer.show{ opacity:1; }
+    .layer.show{opacity:1}
 
     .layer img{
       max-width:100%;
       max-height:100%;
       object-fit:contain;
+      pointer-events:none;
       user-select:none;
       -webkit-user-drag:none;
-      pointer-events:none;
     }
 
     #caption{
@@ -32,41 +32,13 @@
       background:linear-gradient(to top, rgba(0,0,0,.75), rgba(0,0,0,0));
       font-size:14px;
     }
-
-    /* Debug 角落資訊：如果你看不到這個，就表示不是新版本 */
     #hint{
-      position:fixed;top:10px;left:10px;
+      position:fixed;top:10px;left:10px;z-index:9999;
       font-size:13px;color:#fff;
       background:rgba(0,0,0,.55); padding:8px 12px; border-radius:12px;
       border:1px solid rgba(255,255,255,.25);
       line-height:1.35;
-      z-index:9999;
     }
-
-    :root{
-      --dur: 1600ms;
-      --ease: cubic-bezier(.2,.8,.2,1);
-    }
-
-    .enter{ transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease); }
-    .exit { transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease); }
-
-    .from-right{ transform: translate3d(18%,0,0) scale(1.00); }
-    .from-left { transform: translate3d(-18%,0,0) scale(1.00); }
-    .from-top  { transform: translate3d(0,-18%,0) scale(1.00); }
-    .from-bottom{transform: translate3d(0,18%,0) scale(1.00); }
-    .zoom-in   { transform: translate3d(0,0,0) scale(0.85); }
-    .zoom-out  { transform: translate3d(0,0,0) scale(1.12); }
-
-    .to-center{ transform: translate3d(0,0,0) scale(1); opacity:1; }
-
-    .to-left   { transform: translate3d(-14%,0,0) scale(1.00); opacity:0; }
-    .to-right  { transform: translate3d(14%,0,0) scale(1.00); opacity:0; }
-    .to-top    { transform: translate3d(0,-14%,0) scale(1.00); opacity:0; }
-    .to-bottom { transform: translate3d(0,14%,0) scale(1.00); opacity:0; }
-    .fade-out  { transform: translate3d(0,0,0) scale(1.00); opacity:0; }
-
-    #stage, .layer, .layer img { backface-visibility:hidden; }
   </style>
 </head>
 <body>
@@ -75,16 +47,17 @@
     <div id="layerB" class="layer"><img id="imgB" alt=""></div>
   </div>
 
-  <div id="hint">特效測試版 v2025-12-12A<br>載入中…</div>
+  <div id="hint">特效強制版 v2025-12-12B<br>載入中…</div>
   <div id="caption">載入中…</div>
 
 <script>
-const VERSION = "v2025-12-12B";
-const SLIDE_MS = 8000;    // 每張停留時間
-const TRANS_MS = 1600;    // 轉場時間（越長越明顯）
-const POLL_MS  = 10000;
+const VERSION = "v2025-12-12C";
 
-document.documentElement.style.setProperty('--dur', TRANS_MS + 'ms');
+// 看得更明顯
+const SLIDE_MS = 8000;
+const TRANS_MS = 1600;
+const EASE = "cubic-bezier(.2,.8,.2,1)";
+const POLL_MS = 10000;
 
 const capEl = document.getElementById('caption');
 const hintEl = document.getElementById('hint');
@@ -99,21 +72,20 @@ let idx = 0;
 let showingA = true;
 let inTransition = false;
 
-const effectSequence = [
-  { enter: "from-right", exit: "to-left" },
-  { enter: "from-left",  exit: "to-right" },
-  { enter: "from-top",   exit: "to-bottom" },
-  { enter: "from-bottom",exit: "to-top" },
-  { enter: "zoom-in",    exit: "fade-out" },
-  { enter: "zoom-out",   exit: "fade-out" }
+const seq = [
+  { enter:"right", exit:"fade" },
+  { enter:"left",  exit:"fade" },
+  { enter:"top",   exit:"fade" },
+  { enter:"bottom",exit:"fade" },
+  { enter:"zoomin",exit:"fade" },
+  { enter:"zoomout",exit:"fade" }
 ];
-let effectIndex = 0;
+let seqi = 0;
 
 async function loadList() {
-  const res = await fetch("/api/photos", { cache: "no-store" });
+  const res = await fetch("/api/photos", { cache:"no-store" });
   const data = await res.json();
-  if (!data.ok) return;
-  items = data.items || [];
+  if (data.ok) items = data.items || [];
   if (idx >= items.length) idx = 0;
 }
 
@@ -122,85 +94,100 @@ function captionOf(it){
   return `${new Date(it.created_at).toLocaleString()} ${who}`;
 }
 
-function clearClasses(el){
-  el.className = "layer";
-  el.style.opacity = "0";
-  el.style.transform = "translate3d(0,0,0) scale(1)";
+// 進場起始 transform（故意做大一點，30% 你一定看得出來）
+function enterStartTransform(kind){
+  switch(kind){
+    case "right":  return "translate3d(30%,0,0) scale(1)";
+    case "left":   return "translate3d(-30%,0,0) scale(1)";
+    case "top":    return "translate3d(0,-30%,0) scale(1)";
+    case "bottom": return "translate3d(0,30%,0) scale(1)";
+    case "zoomin": return "translate3d(0,0,0) scale(0.80)";
+    case "zoomout":return "translate3d(0,0,0) scale(1.18)";
+    default:       return "translate3d(0,0,0) scale(1)";
+  }
 }
 
-function applyEnter(el, enterClass){
-  clearClasses(el);
-  el.classList.add("enter", enterClass);
-  el.style.opacity = "0";
-  void el.offsetWidth;
-  el.classList.add("to-center");
-  el.style.opacity = "1";
+function exitEndTransform(kind){
+  // 目前先用淡出（最穩），你要 OUT 飛出去也可以再加
+  return "translate3d(0,0,0) scale(1)";
 }
 
-function applyExit(el, exitClass){
-  el.classList.add("exit", exitClass);
-  // 由於 .to-left, .to-right, .to-top, .to-bottom, .fade-out 已經在 CSS 中
-  // 定義了 opacity: 0，所以不需要在 JS 中再次設定
+function setNoTransition(el){
+  el.style.transition = "none";
+}
+
+function setTransition(el){
+  el.style.transition = `opacity ${TRANS_MS}ms ${EASE}, transform ${TRANS_MS}ms ${EASE}`;
 }
 
 async function showNext(forceNewest=false){
   if (inTransition) return;
-  if (!items.length) {
-    hintEl.innerHTML = `特效測試版 ${VERSION}<br>目前沒有照片`;
+  if (!items.length){
+    hintEl.innerHTML = `特效強制版 ${VERSION}<br>目前沒有照片`;
     capEl.textContent = "目前沒有照片";
-    imgA.removeAttribute("src");
-    imgB.removeAttribute("src");
+    imgA.removeAttribute("src"); imgB.removeAttribute("src");
     return;
   }
-
   if (forceNewest) idx = 0;
+
   const it = items[idx % items.length];
   idx++;
 
-  const nextImgEl = showingA ? imgB : imgA;
+  const nextImg = showingA ? imgB : imgA;
   const nextLayer = showingA ? layerB : layerA;
   const curLayer  = showingA ? layerA : layerB;
 
-  nextImgEl.src = it.url;
+  nextImg.src = it.url;
   capEl.textContent = captionOf(it);
 
-  const eff = effectSequence[effectIndex % effectSequence.length];
-  effectIndex++;
-
+  const eff = seq[seqi % seq.length]; seqi++;
   hintEl.innerHTML =
-    `特效測試版 ${VERSION}<br>` +
+    `特效強制版 ${VERSION}<br>` +
     `Enter: <b>${eff.enter}</b> / Exit: <b>${eff.exit}</b><br>` +
     `照片數：${items.length}（按 N 下一張）`;
 
   inTransition = true;
 
+  // 1) 先把 next 設到「起始狀態」（不開 transition）
+  setNoTransition(nextLayer);
   nextLayer.classList.add("show");
-  applyEnter(nextLayer, eff.enter);
+  nextLayer.style.opacity = "0";
+  nextLayer.style.transform = enterStartTransform(eff.enter);
 
-  // 2. 確保 curLayer 處於完全可見的狀態 (雖然它已經是，但增加這行確保)
-  curLayer.style.opacity = "1";
-
+  // 2) 下一幀：打開 transition，讓它往中心 + 淡入
   requestAnimationFrame(() => {
-    // 4. 觸發 curLayer 的退出動畫
-    applyExit(curLayer, eff.exit);
-  });
+    setTransition(nextLayer);
+    setTransition(curLayer);
 
-  setTimeout(() => {
-    clearClasses(curLayer);
-    curLayer.classList.remove("show");
-
-    clearClasses(nextLayer);
-    nextLayer.classList.add("show");
+    // next 進場
     nextLayer.style.opacity = "1";
     nextLayer.style.transform = "translate3d(0,0,0) scale(1)";
 
-    showingA = !showingA;
-    inTransition = false;
-  }, TRANS_MS + 50);
+    // cur 出場（先用淡出）
+    curLayer.style.opacity = "0";
+    curLayer.style.transform = exitEndTransform(eff.exit);
+
+    // 3) 結束後清理
+    setTimeout(() => {
+      // 清掉舊層
+      setNoTransition(curLayer);
+      curLayer.classList.remove("show");
+      curLayer.style.opacity = "0";
+      curLayer.style.transform = "translate3d(0,0,0) scale(1)";
+
+      // next 固定成 show 狀態
+      setNoTransition(nextLayer);
+      nextLayer.style.opacity = "1";
+      nextLayer.style.transform = "translate3d(0,0,0) scale(1)";
+
+      showingA = !showingA;
+      inTransition = false;
+    }, TRANS_MS + 60);
+  });
 }
 
-setInterval(() => { loadList().catch(()=>{}); }, POLL_MS);
-setInterval(() => { showNext(false); }, SLIDE_MS);
+setInterval(()=>{ loadList().catch(()=>{}); }, POLL_MS);
+setInterval(()=>{ showNext(false); }, SLIDE_MS);
 
 document.addEventListener('keydown', (e) => {
   if (e.key.toLowerCase() === 'n') showNext(false);
@@ -208,10 +195,10 @@ document.addEventListener('keydown', (e) => {
 
 function startSSE(){
   const es = new EventSource("/api/stream");
-  es.addEventListener("new", (evt) => {
+  es.addEventListener("new", (evt)=>{
     try{
       const msg = JSON.parse(evt.data);
-      if (msg && msg.item) {
+      if (msg && msg.item){
         items.unshift(msg.item);
         showNext(true);
       }
