@@ -187,6 +187,14 @@ app.post("/api/upload", upload.array("files", MAX_FILES_PER_UPLOAD), async (req,
   }
 });
 
+app.get("/api/version", (req, res) => {
+  res.json({
+    ok: true,
+    version: process.env.RENDER_GIT_COMMIT || "unknown",
+    time: new Date().toISOString()
+  });
+});
+
 // 健康檢查
 app.get("/healthz", (req, res) => res.send("ok"));
 
