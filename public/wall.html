@@ -62,20 +62,20 @@ html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui,
     <div id="layerB" class="layer"><img id="imgB" alt=""></div>
   </div>
 
-  <div id="hint">模式：Slide/Zoom + Wipe + Crossfade</div>
+  <div id="hint">Queue 模式：不插隊</div>
   <div id="caption">載入中…</div>
 
 <script>
-/* ===== 舒服預設 ===== */
+/* ===== 播放參數 ===== */
 const SLIDE_MS = 6000;
 const TRANS_MS = 1200;
 const EASE = "cubic-bezier(0.22,0.61,0.36,1)";
 const POLL_MS  = 10000;
 
-/* 機率（可依喜好調） */
+/* 特效機率（可調） */
 const RATE_WIPE  = 0.22;  // 22%：PPT 擦去
-const RATE_MOVE  = 0.28;  // 28%：滑入/縮放（你原本那組）
-/* 剩下：Crossfade（約 50%），看起來最像簡報 */
+const RATE_MOVE  = 0.28;  // 28%：滑入/縮放
+/* 其餘：Crossfade */
 
 const caption = document.getElementById("caption");
 const hint = document.getElementById("hint");
@@ -84,11 +84,6 @@ const layerA = document.getElementById("layerA");
 const layerB = document.getElementById("layerB");
 const imgA = document.getElementById("imgA");
 const imgB = document.getElementById("imgB");
-
-let items = [];
-let idx = 0;
-let showA = true;
-let busy = false;
 
 /* ===== 你原本的 effects（保留） ===== */
 const effects = [
@@ -102,24 +97,11 @@ const effects = [
 
 function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
-async function loadList(){
-  const r = await fetch("/api/photos", { cache:"no-store" });
-  const j = await r.json();
-  if (j.ok) items = j.items || [];
-  if (idx >= items.length) idx = 0;
-}
-
-function captionOf(it){
-  const who = it.uploader ? `（${it.uploader}）` : "";
-  return `${new Date(it.created_at).toLocaleString()}${who}`;
-}
-
 function noTrans(el){ el.style.transition = "none"; }
 function trans(el){
   el.style.transition =
     `opacity ${TRANS_MS}ms ${EASE}, transform ${TRANS_MS}ms ${EASE}, clip-path ${TRANS_MS}ms ${EASE}`;
 }
-
 function clearClip(el){
   el.classList.remove(
     "wipe-h-init","wipe-h-done",
@@ -129,8 +111,6 @@ function clearClip(el){
   );
   el.style.clipPath = "";
 }
-
-/* ===== Wipe helpers ===== */
 const wipeKinds = ["h","hr","v","vb"];
 function wipeInitClass(kind){
   return kind==="h" ? "wipe-h-init"
@@ -144,8 +124,6 @@ function wipeDoneClass(kind){
        : kind==="v" ? "wipe-v-done"
        : "wipe-vb-done";
 }
-
-/* ===== 決定本次用哪種效果 ===== */
 function pickMode(){
   const r = Math.random();
   if (r < RATE_WIPE) return "wipe";
@@ -153,16 +131,72 @@ function pickMode(){
   return "fade";
 }
 
-async function showNext(forceNewest=false){
+/* ====== Queue 核心 ======
+   - itemsById: public_id -> item（含 url/uploader/created_at）
+   - queue: public_id[]  播放佇列（循環）
+*/
+const itemsById = new Map();
+let queue = [];
+let busy = false;
+let showA = true;
+
+/* 將 Cloudinary 清單同步進 itemsById + queue（不改變 queue 既有順序） */
+function syncFromList(list){
+  // 1) 更新/補進 itemsById
+  for (const it of list){
+    itemsById.set(it.public_id, it);
+  }
+
+  // 2) 移除 Cloudinary 已不存在的（被刪掉）
+  const live = new Set(list.map(x => x.public_id));
+  for (const id of Array.from(itemsById.keys())){
+    if (!live.has(id)) itemsById.delete(id);
+  }
+  queue = queue.filter(id => itemsById.has(id));
+
+  // 3) 把「新出現但 queue 還沒有」的 id 加到尾巴（保持不插隊）
+  //    注意：list 是新到舊，但我們這裡要「尾巴加入」且保持上傳先後合理：
+  //    所以把 list 反過來（舊→新）再逐一補尾巴，順序才符合時間。
+  const oldestToNewest = [...list].reverse();
+  for (const it of oldestToNewest){
+    if (!queue.includes(it.public_id)){
+      queue.push(it.public_id);
+    }
+  }
+}
+
+async function loadList(){
+  const r = await fetch("/api/photos", { cache:"no-store" });
+  const j = await r.json();
+  if (j.ok) {
+    syncFromList(j.items || []);
+  }
+}
+
+function captionOf(it){
+  const who = it.uploader ? `（${it.uploader}）` : "";
+  return `${new Date(it.created_at).toLocaleString()}${who}`;
+}
+
+/* 播放一張：shift -> 播 -> push */
+async function playNext(){
   if (busy) return;
-  if (!items.length){
+  if (!queue.length){
     caption.textContent = "目前沒有照片";
     return;
   }
   busy = true;
 
-  if (forceNewest) idx = 0;
-  const it = items[idx++ % items.length];
+  const id = queue.shift();
+  const it = itemsById.get(id);
+  // 理論上不會缺，但保險
+  if (!it){
+    busy = false;
+    return;
+  }
+
+  // 播完回尾巴（循環）
+  queue.push(id);
 
   const cur = showA ? layerA : layerB;
   const nxt = showA ? layerB : layerA;
@@ -183,44 +217,36 @@ async function showNext(forceNewest=false){
   const mode = pickMode();
 
   if (mode === "wipe"){
-    // PPT 擦去
     const kind = pick(wipeKinds);
-    hint.textContent = "特效：PPT 擦去 (Wipe)";
+    hint.textContent = "特效：PPT 擦去（不插隊）";
 
-    // nxt 先遮住（不動，只擦開）
     nxt.style.opacity = "1";
     nxt.style.transform = "translate3d(0,0,0) scale(1)";
     nxt.classList.add(wipeInitClass(kind));
 
     requestAnimationFrame(()=>{
       trans(nxt); trans(cur);
-
-      // 擦開 next
       nxt.classList.add(wipeDoneClass(kind));
-      // current 稍晚淡出，交疊更自然
       setTimeout(()=>{ cur.style.opacity = "0"; }, 160);
     });
 
   } else if (mode === "move"){
-    // 你原本的滑入/縮放
     const fx = pick(effects)();
-    hint.textContent = "特效：滑入/縮放";
+    hint.textContent = "特效：滑入/縮放（不插隊）";
 
-    // nxt 從偏移/縮放開始，淡入到中心
     nxt.style.opacity = "0";
     nxt.style.transform = `translate3d(${fx.x}%,${fx.y}%,0) scale(${fx.s})`;
 
     requestAnimationFrame(()=>{
       trans(nxt); trans(cur);
-
       nxt.style.opacity = "1";
       nxt.style.transform = "translate3d(0,0,0) scale(1)";
       setTimeout(()=>{ cur.style.opacity = "0"; }, 150);
     });
 
   } else {
-    // Crossfade（最像簡報）
-    hint.textContent = "特效：Crossfade";
+    hint.textContent = "特效：Crossfade（不插隊）";
+
     nxt.style.opacity = "0";
     nxt.style.transform = "translate3d(0,0,0) scale(1)";
 
@@ -231,7 +257,6 @@ async function showNext(forceNewest=false){
     });
   }
 
-  // 收尾
   setTimeout(()=>{
     noTrans(cur);
     cur.classList.remove("show");
@@ -250,22 +275,28 @@ async function showNext(forceNewest=false){
 
 /* 保底輪詢 + 輪播 */
 setInterval(()=>{ loadList().catch(()=>{}); }, POLL_MS);
-setInterval(()=>{ showNext(false); }, SLIDE_MS);
+setInterval(()=>{ playNext(); }, SLIDE_MS);
 
-/* 快速測試：按 N 立刻下一張 */
+/* 快速測試：按 N 下一張 */
 document.addEventListener("keydown", (e)=>{
-  if (e.key.toLowerCase()==="n") showNext(false);
+  if (e.key.toLowerCase()==="n") playNext();
 });
 
-/* SSE：新照片優先播 */
+/* SSE：新照片只 push 到尾巴（不插隊、不立刻播） */
 function startSSE(){
   const es = new EventSource("/api/stream");
   es.addEventListener("new", (evt)=>{
     try{
       const msg = JSON.parse(evt.data);
       if (msg && msg.item){
-        items.unshift(msg.item);
-        showNext(true);
+        // 更新 itemsById
+        itemsById.set(msg.item.public_id, msg.item);
+
+        // 只加到尾巴（避免重複）
+        if (!queue.includes(msg.item.public_id)){
+          queue.push(msg.item.public_id);
+        }
+        // 不呼叫 playNext()、不重設任何指標
       }
     }catch{}
   });
@@ -273,7 +304,7 @@ function startSSE(){
 
 (async ()=>{
   await loadList();
-  showNext(true);
+  playNext();
   startSSE();
 })();
 </script>
