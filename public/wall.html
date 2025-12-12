@@ -1,215 +1,158 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>照片牆</title>
-  <style>
-    html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
-    #stage{position:fixed;inset:0;overflow:hidden;background:#000}
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>照片牆</title>
 
-    .layer{
-      position:absolute; inset:0;
-      display:flex; align-items:center; justify-content:center;
-      opacity:0;
-      transform: translate3d(0,0,0) scale(1);
-      will-change: transform, opacity;
-    }
-    .layer.show{opacity:1}
+<style>
+html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui}
+#stage{position:fixed;inset:0;overflow:hidden}
 
-    .layer img{
-      max-width:100%;
-      max-height:100%;
-      object-fit:contain;
-      pointer-events:none;
-      user-select:none;
-      -webkit-user-drag:none;
-    }
+.layer{
+  position:absolute; inset:0;
+  display:flex; align-items:center; justify-content:center;
+  opacity:0;
+  transform:translate3d(0,0,0) scale(1);
+  will-change:transform,opacity;
+}
+.layer.show{opacity:1}
 
-    #caption{
-      position:fixed;left:0;right:0;bottom:0;
-      padding:10px 14px;
-      background:linear-gradient(to top, rgba(0,0,0,.75), rgba(0,0,0,0));
-      font-size:14px;
-    }
-    #hint{
-      position:fixed;top:10px;left:10px;z-index:9999;
-      font-size:13px;color:#fff;
-      background:rgba(0,0,0,.55); padding:8px 12px; border-radius:12px;
-      border:1px solid rgba(255,255,255,.25);
-      line-height:1.35;
-    }
-  </style>
+.layer img{
+  max-width:100%;
+  max-height:100%;
+  object-fit:contain;
+  user-select:none;
+  pointer-events:none;
+}
+
+#caption{
+  position:fixed;left:0;right:0;bottom:0;
+  padding:10px 14px;
+  background:linear-gradient(to top,rgba(0,0,0,.75),transparent);
+  font-size:14px;
+}
+
+#hint{
+  position:fixed;top:10px;left:10px;
+  font-size:12px;
+  background:rgba(0,0,0,.45);
+  padding:6px 10px;
+  border-radius:10px;
+}
+</style>
 </head>
-<body>
-  <div id="stage">
-    <div id="layerA" class="layer show"><img id="imgA" alt=""></div>
-    <div id="layerB" class="layer"><img id="imgB" alt=""></div>
-  </div>
 
-  <div id="hint">特效強制版 v2025-12-12B<br>載入中…</div>
-  <div id="caption">載入中…</div>
+<body>
+<div id="stage">
+  <div id="layerA" class="layer show"><img id="imgA"></div>
+  <div id="layerB" class="layer"><img id="imgB"></div>
+</div>
+
+<div id="hint">自然隨機版</div>
+<div id="caption"></div>
 
 <script>
-const VERSION = "v2025-12-12C";
-
-// 看得更明顯
-const SLIDE_MS = 8000;
-const TRANS_MS = 1600;
-const EASE = "cubic-bezier(.2,.8,.2,1)";
+/* ===== 可調參數（已是舒服預設） ===== */
+const SLIDE_MS = 6000;
+const TRANS_MS = 1200;
+const EASE = "cubic-bezier(0.22,0.61,0.36,1)";
 const POLL_MS = 10000;
 
-const capEl = document.getElementById('caption');
-const hintEl = document.getElementById('hint');
+/* 特效機率 */
+const EFFECT_RATE = 0.35; // 35% 用特效，其餘純淡入淡出
 
-const layerA = document.getElementById('layerA');
-const layerB = document.getElementById('layerB');
-const imgA = document.getElementById('imgA');
-const imgB = document.getElementById('imgB');
+const layerA=document.getElementById("layerA");
+const layerB=document.getElementById("layerB");
+const imgA=document.getElementById("imgA");
+const imgB=document.getElementById("imgB");
+const caption=document.getElementById("caption");
+const hint=document.getElementById("hint");
 
-let items = [];
-let idx = 0;
-let showingA = true;
-let inTransition = false;
+let items=[],idx=0,showA=true,busy=false;
 
-const seq = [
-  { enter:"right", exit:"fade" },
-  { enter:"left",  exit:"fade" },
-  { enter:"top",   exit:"fade" },
-  { enter:"bottom",exit:"fade" },
-  { enter:"zoomin",exit:"fade" },
-  { enter:"zoomout",exit:"fade" }
+/* ===== 效果池（自然幅度） ===== */
+const effects=[
+  ()=>({x:  8,y:  0,s:1.00}), // from right
+  ()=>({x: -8,y:  0,s:1.00}), // from left
+  ()=>({x:  0,y:  8,s:1.00}), // from bottom
+  ()=>({x:  0,y: -8,s:1.00}), // from top
+  ()=>({x:  0,y:  0,s:0.96}), // zoom in
+  ()=>({x:  0,y:  0,s:1.04})  // zoom out
 ];
-let seqi = 0;
 
-async function loadList() {
-  const res = await fetch("/api/photos", { cache:"no-store" });
-  const data = await res.json();
-  if (data.ok) items = data.items || [];
-  if (idx >= items.length) idx = 0;
+async function loadList(){
+  const r=await fetch("/api/photos",{cache:"no-store"});
+  const j=await r.json();
+  if(j.ok) items=j.items||[];
+  if(idx>=items.length) idx=0;
 }
 
 function captionOf(it){
-  const who = it.uploader ? `（${it.uploader} 上傳）` : "";
-  return `${new Date(it.created_at).toLocaleString()} ${who}`;
+  return `${new Date(it.created_at).toLocaleString()}${it.uploader?`（${it.uploader}）`:""}`;
 }
 
-// 進場起始 transform（故意做大一點，30% 你一定看得出來）
-function enterStartTransform(kind){
-  switch(kind){
-    case "right":  return "translate3d(30%,0,0) scale(1)";
-    case "left":   return "translate3d(-30%,0,0) scale(1)";
-    case "top":    return "translate3d(0,-30%,0) scale(1)";
-    case "bottom": return "translate3d(0,30%,0) scale(1)";
-    case "zoomin": return "translate3d(0,0,0) scale(0.80)";
-    case "zoomout":return "translate3d(0,0,0) scale(1.18)";
-    default:       return "translate3d(0,0,0) scale(1)";
-  }
-}
+function styleNo(el){ el.style.transition="none"; }
+function styleYes(el){ el.style.transition=`opacity ${TRANS_MS}ms ${EASE}, transform ${TRANS_MS}ms ${EASE}`; }
 
-function exitEndTransform(kind){
-  // 目前先用淡出（最穩），你要 OUT 飛出去也可以再加
-  return "translate3d(0,0,0) scale(1)";
-}
+async function next(){
+  if(busy||!items.length) return;
+  busy=true;
 
-function setNoTransition(el){
-  el.style.transition = "none";
-}
+  const it=items[idx++%items.length];
+  caption.textContent=captionOf(it);
 
-function setTransition(el){
-  el.style.transition = `opacity ${TRANS_MS}ms ${EASE}, transform ${TRANS_MS}ms ${EASE}`;
-}
+  const cur=showA?layerA:layerB;
+  const nxt=showA?layerB:layerA;
+  const img=showA?imgB:imgA;
 
-async function showNext(forceNewest=false){
-  if (inTransition) return;
-  if (!items.length){
-    hintEl.innerHTML = `特效強制版 ${VERSION}<br>目前沒有照片`;
-    capEl.textContent = "目前沒有照片";
-    imgA.removeAttribute("src"); imgB.removeAttribute("src");
-    return;
-  }
-  if (forceNewest) idx = 0;
+  img.src=it.url;
 
-  const it = items[idx % items.length];
-  idx++;
+  const useFx=Math.random()<EFFECT_RATE;
+  const fx=useFx?effects[Math.floor(Math.random()*effects.length)]():{x:0,y:0,s:1};
 
-  const nextImg = showingA ? imgB : imgA;
-  const nextLayer = showingA ? layerB : layerA;
-  const curLayer  = showingA ? layerA : layerB;
+  hint.textContent=useFx?"特效":"淡入淡出";
 
-  nextImg.src = it.url;
-  capEl.textContent = captionOf(it);
+  styleNo(nxt);
+  nxt.classList.add("show");
+  nxt.style.opacity=0;
+  nxt.style.transform=`translate(${fx.x}%,${fx.y}%) scale(${fx.s})`;
 
-  const eff = seq[seqi % seq.length]; seqi++;
-  hintEl.innerHTML =
-    `特效強制版 ${VERSION}<br>` +
-    `Enter: <b>${eff.enter}</b> / Exit: <b>${eff.exit}</b><br>` +
-    `照片數：${items.length}（按 N 下一張）`;
+  requestAnimationFrame(()=>{
+    styleYes(nxt);
+    styleYes(cur);
 
-  inTransition = true;
+    nxt.style.opacity=1;
+    nxt.style.transform="translate(0,0) scale(1)";
 
-  // 1) 先把 next 設到「起始狀態」（不開 transition）
-  setNoTransition(nextLayer);
-  nextLayer.classList.add("show");
-  nextLayer.style.opacity = "0";
-  nextLayer.style.transform = enterStartTransform(eff.enter);
-
-  // 2) 下一幀：打開 transition，讓它往中心 + 淡入
-  requestAnimationFrame(() => {
-    setTransition(nextLayer);
-    setTransition(curLayer);
-
-    // next 進場
-    nextLayer.style.opacity = "1";
-    nextLayer.style.transform = "translate3d(0,0,0) scale(1)";
-
-    // cur 出場（先用淡出）
-    curLayer.style.opacity = "0";
-    curLayer.style.transform = exitEndTransform(eff.exit);
-
-    // 3) 結束後清理
-    setTimeout(() => {
-      // 清掉舊層
-      setNoTransition(curLayer);
-      curLayer.classList.remove("show");
-      curLayer.style.opacity = "0";
-      curLayer.style.transform = "translate3d(0,0,0) scale(1)";
-
-      // next 固定成 show 狀態
-      setNoTransition(nextLayer);
-      nextLayer.style.opacity = "1";
-      nextLayer.style.transform = "translate3d(0,0,0) scale(1)";
-
-      showingA = !showingA;
-      inTransition = false;
-    }, TRANS_MS + 60);
+    setTimeout(()=>{ cur.style.opacity=0; },150); // OUT 稍晚一點
   });
+
+  setTimeout(()=>{
+    styleNo(cur);
+    cur.classList.remove("show");
+    cur.style.opacity=0;
+
+    styleNo(nxt);
+    nxt.style.opacity=1;
+    nxt.style.transform="translate(0,0) scale(1)";
+
+    showA=!showA;
+    busy=false;
+  },TRANS_MS+200);
 }
 
-setInterval(()=>{ loadList().catch(()=>{}); }, POLL_MS);
-setInterval(()=>{ showNext(false); }, SLIDE_MS);
+/* ===== 初始化 ===== */
+setInterval(loadList,POLL_MS);
+setInterval(next,SLIDE_MS);
 
-document.addEventListener('keydown', (e) => {
-  if (e.key.toLowerCase() === 'n') showNext(false);
+document.addEventListener("keydown",e=>{
+  if(e.key.toLowerCase()==="n") next();
 });
 
-function startSSE(){
-  const es = new EventSource("/api/stream");
-  es.addEventListener("new", (evt)=>{
-    try{
-      const msg = JSON.parse(evt.data);
-      if (msg && msg.item){
-        items.unshift(msg.item);
-        showNext(true);
-      }
-    }catch{}
-  });
-}
-
-(async function init(){
+(async()=>{
   await loadList();
-  await showNext(true);
-  startSSE();
+  next();
 })();
 </script>
 </body>
