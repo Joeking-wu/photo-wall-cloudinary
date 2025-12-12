@@ -79,7 +79,7 @@
   <div id="caption">載入中…</div>
 
 <script>
-const VERSION = "v2025-12-12A";
+const VERSION = "v2025-12-12B";
 const SLIDE_MS = 8000;    // 每張停留時間
 const TRANS_MS = 1600;    // 轉場時間（越長越明顯）
 const POLL_MS  = 10000;
@@ -139,7 +139,8 @@ function applyEnter(el, enterClass){
 
 function applyExit(el, exitClass){
   el.classList.add("exit", exitClass);
-  el.style.opacity = "0";
+  // 由於 .to-left, .to-right, .to-top, .to-bottom, .fade-out 已經在 CSS 中
+  // 定義了 opacity: 0，所以不需要在 JS 中再次設定
 }
 
 async function showNext(forceNewest=false){
@@ -175,7 +176,14 @@ async function showNext(forceNewest=false){
 
   nextLayer.classList.add("show");
   applyEnter(nextLayer, eff.enter);
-  applyExit(curLayer, eff.exit);
+
+  // 2. 確保 curLayer 處於完全可見的狀態 (雖然它已經是，但增加這行確保)
+  curLayer.style.opacity = "1";
+
+  requestAnimationFrame(() => {
+    // 4. 觸發 curLayer 的退出動畫
+    applyExit(curLayer, eff.exit);
+  });
 
   setTimeout(() => {
     clearClasses(curLayer);
