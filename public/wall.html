@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>照片牆</title>
+  <style>
+    html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+    #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    img{max-width:100%;max-height:100%;object-fit:contain}
+    #caption{
+      position:fixed;left:0;right:0;bottom:0;
+      padding:10px 14px;
+      background:linear-gradient(to top, rgba(0,0,0,.75), rgba(0,0,0,0));
+      font-size:14px;
+    }
+    #hint{
+      position:fixed;top:10px;left:10px;
+      font-size:12px;color:#ddd;opacity:.8
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <img id="img" alt="" />
+  </div>
+  <div id="hint">提示：按 F11 全螢幕；照片會自動更新</div>
+  <div id="caption"></div>
+
+<script>
+const imgEl = document.getElementById('img');
+const capEl = document.getElementById('caption');
+
+let items = [];
+let idx = 0;
+let slideMs = 4000; // 每張停留時間
+
+async function loadList() {
+  const res = await fetch("/api/photos", { cache: "no-store" });
+  const data = await res.json();
+  if (!data.ok) return;
+  items = data.items || [];
+  // 新的在前面
+  if (idx >= items.length) idx = 0;
+}
+
+function showCurrent() {
+  if (!items.length) {
+    imgEl.removeAttribute("src");
+    capEl.textContent = "目前沒有照片";
+    return;
+  }
+  const it = items[idx % items.length];
+  idx++;
+
+  imgEl.src = it.url;
+  const who = it.uploader ? `（${it.uploader} 上傳）` : "";
+  capEl.textContent = `${new Date(it.created_at).toLocaleString()} ${who}`;
+}
+
+// 保底輪詢：每 10 秒更新清單（避免 SSE 斷線還是能更新）
+setInterval(() => {
+  loadList().catch(()=>{});
+}, 10000);
+
+// 輪播
+setInterval(() => {
+  showCurrent();
+}, slideMs);
+
+// SSE 即時新增：收到 new 就把它插到最前面
+function startSSE() {
+  const es = new EventSource("/api/stream");
+  es.addEventListener("new", (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      if (msg && msg.item) {
+        items.unshift(msg.item);
+        // 立刻顯示最新一張（更有即時感）
+        idx = 0;
+        showCurrent();
+      }
+    } catch {}
+  });
+  es.onerror = () => {
+    // 斷線就讓輪詢頂著，不用做太多
+  };
+}
+
+(async function init(){
+  await loadList();
+  showCurrent();
+  startSSE();
+})();
+</script>
+</body>
+</html>
