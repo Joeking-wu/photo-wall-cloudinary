@@ -100,10 +100,10 @@ let showingA = true;
 let inTransition = false;
 
 const effectSequence = [
-  { enter: "from-right", exit: "fade-out" },
-  { enter: "from-left",  exit: "fade-out" },
-  { enter: "from-top",   exit: "fade-out" },
-  { enter: "from-bottom",exit: "fade-out" },
+  { enter: "from-right", exit: "to-left" },
+  { enter: "from-left",  exit: "to-right" },
+  { enter: "from-top",   exit: "to-bottom" },
+  { enter: "from-bottom",exit: "to-top" },
   { enter: "zoom-in",    exit: "fade-out" },
   { enter: "zoom-out",   exit: "fade-out" }
 ];
