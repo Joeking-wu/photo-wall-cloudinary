@@ -6,15 +6,15 @@
 <title>照片牆</title>
 
 <style>
-html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui}
-#stage{position:fixed;inset:0;overflow:hidden}
+html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+#stage{position:fixed;inset:0;overflow:hidden;background:#000}
 
 .layer{
   position:absolute; inset:0;
   display:flex; align-items:center; justify-content:center;
   opacity:0;
   transform:translate3d(0,0,0) scale(1);
-  will-change:transform,opacity;
+  will-change:transform,opacity,clip-path;
 }
 .layer.show{opacity:1}
 
@@ -22,137 +22,225 @@ html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui}
   max-width:100%;
   max-height:100%;
   object-fit:contain;
-  user-select:none;
   pointer-events:none;
+  user-select:none;
+  -webkit-user-drag:none;
 }
 
 #caption{
   position:fixed;left:0;right:0;bottom:0;
   padding:10px 14px;
-  background:linear-gradient(to top,rgba(0,0,0,.75),transparent);
+  background:linear-gradient(to top, rgba(0,0,0,.75), rgba(0,0,0,0));
   font-size:14px;
 }
-
 #hint{
   position:fixed;top:10px;left:10px;
-  font-size:12px;
+  font-size:12px;color:#fff;
   background:rgba(0,0,0,.45);
-  padding:6px 10px;
-  border-radius:10px;
+  padding:6px 10px;border-radius:10px;
+  border:1px solid rgba(255,255,255,.18);
 }
+
+/* ===== PPT 擦去（Wipe）—用 clip-path 模擬 ===== */
+.wipe-h-init{ clip-path: inset(0 100% 0 0); }
+.wipe-h-done{ clip-path: inset(0 0 0 0); }
+
+.wipe-v-init{ clip-path: inset(100% 0 0 0); }
+.wipe-v-done{ clip-path: inset(0 0 0 0); }
+
+.wipe-hr-init{ clip-path: inset(0 0 0 100%); } /* 右→左擦開 */
+.wipe-hr-done{ clip-path: inset(0 0 0 0); }
+
+.wipe-vb-init{ clip-path: inset(0 0 100% 0); } /* 下→上擦開 */
+.wipe-vb-done{ clip-path: inset(0 0 0 0); }
 </style>
 </head>
 
 <body>
-<div id="stage">
-  <div id="layerA" class="layer show"><img id="imgA"></div>
-  <div id="layerB" class="layer"><img id="imgB"></div>
-</div>
+  <div id="stage">
+    <div id="layerA" class="layer show"><img id="imgA" alt=""></div>
+    <div id="layerB" class="layer"><img id="imgB" alt=""></div>
+  </div>
 
-<div id="hint">自然隨機版</div>
-<div id="caption"></div>
+  <div id="hint">模式：Crossfade + PPT 擦去</div>
+  <div id="caption">載入中…</div>
 
 <script>
-/* ===== 可調參數（已是舒服預設） ===== */
-const SLIDE_MS = 6000;
-const TRANS_MS = 1200;
-const EASE = "cubic-bezier(0.22,0.61,0.36,1)";
-const POLL_MS = 10000;
+/* ===== 參數（舒服、穩） ===== */
+const SLIDE_MS = 6000;                         // 每張停留
+const TRANS_MS = 1100;                         // 轉場時間
+const EASE = "cubic-bezier(0.22,0.61,0.36,1)"; // 很像簡報的曲線
+const POLL_MS  = 10000;                        // 保底輪詢（SSE 斷線仍可更新）
 
-/* 特效機率 */
-const EFFECT_RATE = 0.35; // 35% 用特效，其餘純淡入淡出
+/* 特效比例：PPT 擦去出現的機率 */
+const PPT_WIPE_RATE = 0.30;                    // 30% 用擦去，其餘 Crossfade
 
-const layerA=document.getElementById("layerA");
-const layerB=document.getElementById("layerB");
-const imgA=document.getElementById("imgA");
-const imgB=document.getElementById("imgB");
-const caption=document.getElementById("caption");
-const hint=document.getElementById("hint");
+const caption = document.getElementById("caption");
+const hint = document.getElementById("hint");
 
-let items=[],idx=0,showA=true,busy=false;
+const layerA = document.getElementById("layerA");
+const layerB = document.getElementById("layerB");
+const imgA = document.getElementById("imgA");
+const imgB = document.getElementById("imgB");
 
-/* ===== 效果池（自然幅度） ===== */
-const effects=[
-  ()=>({x:  8,y:  0,s:1.00}), // from right
-  ()=>({x: -8,y:  0,s:1.00}), // from left
-  ()=>({x:  0,y:  8,s:1.00}), // from bottom
-  ()=>({x:  0,y: -8,s:1.00}), // from top
-  ()=>({x:  0,y:  0,s:0.96}), // zoom in
-  ()=>({x:  0,y:  0,s:1.04})  // zoom out
-];
+let items = [];
+let idx = 0;
+let showA = true;
+let busy = false;
 
 async function loadList(){
-  const r=await fetch("/api/photos",{cache:"no-store"});
-  const j=await r.json();
-  if(j.ok) items=j.items||[];
-  if(idx>=items.length) idx=0;
+  const r = await fetch("/api/photos", { cache:"no-store" });
+  const j = await r.json();
+  if (j.ok) items = j.items || [];
+  if (idx >= items.length) idx = 0;
 }
 
 function captionOf(it){
-  return `${new Date(it.created_at).toLocaleString()}${it.uploader?`（${it.uploader}）`:""}`;
+  const who = it.uploader ? `（${it.uploader}）` : "";
+  return `${new Date(it.created_at).toLocaleString()}${who}`;
 }
 
-function styleNo(el){ el.style.transition="none"; }
-function styleYes(el){ el.style.transition=`opacity ${TRANS_MS}ms ${EASE}, transform ${TRANS_MS}ms ${EASE}`; }
+function noTrans(el){ el.style.transition = "none"; }
+function trans(el){ el.style.transition = `opacity ${TRANS_MS}ms ${EASE}, transform ${TRANS_MS}ms ${EASE}, clip-path ${TRANS_MS}ms ${EASE}`; }
 
-async function next(){
-  if(busy||!items.length) return;
-  busy=true;
+function clearWipeClasses(el){
+  el.classList.remove(
+    "wipe-h-init","wipe-h-done",
+    "wipe-v-init","wipe-v-done",
+    "wipe-hr-init","wipe-hr-done",
+    "wipe-vb-init","wipe-vb-done"
+  );
+  el.style.clipPath = ""; // 保險：清掉殘留
+}
 
-  const it=items[idx++%items.length];
-  caption.textContent=captionOf(it);
+function pickWipe(){
+  // 4 個方向：左→右、上→下、右→左、下→上
+  const types = ["h", "v", "hr", "vb"];
+  return types[Math.floor(Math.random()*types.length)];
+}
 
-  const cur=showA?layerA:layerB;
-  const nxt=showA?layerB:layerA;
-  const img=showA?imgB:imgA;
+function setWipeInit(el, kind){
+  clearWipeClasses(el);
+  if (kind === "h")  el.classList.add("wipe-h-init");
+  if (kind === "v")  el.classList.add("wipe-v-init");
+  if (kind === "hr") el.classList.add("wipe-hr-init");
+  if (kind === "vb") el.classList.add("wipe-vb-init");
+}
+function setWipeDone(el, kind){
+  if (kind === "h")  el.classList.add("wipe-h-done");
+  if (kind === "v")  el.classList.add("wipe-v-done");
+  if (kind === "hr") el.classList.add("wipe-hr-done");
+  if (kind === "vb") el.classList.add("wipe-vb-done");
+}
 
-  img.src=it.url;
+async function showNext(forceNewest=false){
+  if (busy) return;
+  if (!items.length){
+    caption.textContent = "目前沒有照片";
+    return;
+  }
+  busy = true;
 
-  const useFx=Math.random()<EFFECT_RATE;
-  const fx=useFx?effects[Math.floor(Math.random()*effects.length)]():{x:0,y:0,s:1};
+  if (forceNewest) idx = 0;
+  const it = items[idx++ % items.length];
 
-  hint.textContent=useFx?"特效":"淡入淡出";
+  const cur = showA ? layerA : layerB;
+  const nxt = showA ? layerB : layerA;
+  const nextImg = showA ? imgB : imgA;
 
-  styleNo(nxt);
+  nextImg.src = it.url;
+  caption.textContent = captionOf(it);
+
+  const useWipe = Math.random() < PPT_WIPE_RATE;
+  const wipeKind = useWipe ? pickWipe() : "";
+
+  // 初始化 next（不開 transition）
+  noTrans(nxt);
   nxt.classList.add("show");
-  nxt.style.opacity=0;
-  nxt.style.transform=`translate(${fx.x}%,${fx.y}%) scale(${fx.s})`;
+  nxt.style.opacity = "1";
+  nxt.style.transform = "translate3d(0,0,0) scale(1)";
+  clearWipeClasses(nxt);
 
-  requestAnimationFrame(()=>{
-    styleYes(nxt);
-    styleYes(cur);
+  // 初始化 current
+  noTrans(cur);
+  cur.style.opacity = "1";
+  cur.style.transform = "translate3d(0,0,0) scale(1)";
+  clearWipeClasses(cur);
 
-    nxt.style.opacity=1;
-    nxt.style.transform="translate(0,0) scale(1)";
+  if (useWipe){
+    hint.textContent = "特效：PPT 擦去 (Wipe)";
+    // next 先遮住
+    setWipeInit(nxt, wipeKind);
 
-    setTimeout(()=>{ cur.style.opacity=0; },150); // OUT 稍晚一點
-  });
+    requestAnimationFrame(()=>{
+      // 開始轉場
+      trans(nxt);
+      trans(cur);
+
+      // 擦開 next
+      setWipeDone(nxt, wipeKind);
+
+      // current 淡出（稍微延後一點，交疊更自然）
+      setTimeout(()=>{ cur.style.opacity = "0"; }, 160);
+    });
+
+  } else {
+    hint.textContent = "特效：Crossfade";
+    // Crossfade：next 從透明到不透明
+    noTrans(nxt);
+    nxt.style.opacity = "0";
+    requestAnimationFrame(()=>{
+      trans(nxt);
+      trans(cur);
+      nxt.style.opacity = "1";
+      setTimeout(()=>{ cur.style.opacity = "0"; }, 120);
+    });
+  }
 
   setTimeout(()=>{
-    styleNo(cur);
+    // 清掉舊層
+    noTrans(cur);
     cur.classList.remove("show");
-    cur.style.opacity=0;
+    cur.style.opacity = "0";
+    clearWipeClasses(cur);
 
-    styleNo(nxt);
-    nxt.style.opacity=1;
-    nxt.style.transform="translate(0,0) scale(1)";
+    // next 固定狀態
+    noTrans(nxt);
+    nxt.style.opacity = "1";
+    clearWipeClasses(nxt);
 
-    showA=!showA;
-    busy=false;
-  },TRANS_MS+200);
+    showA = !showA;
+    busy = false;
+  }, TRANS_MS + 240);
 }
 
-/* ===== 初始化 ===== */
-setInterval(loadList,POLL_MS);
-setInterval(next,SLIDE_MS);
+/* 保底輪詢 + 輪播 */
+setInterval(()=>{ loadList().catch(()=>{}); }, POLL_MS);
+setInterval(()=>{ showNext(false).catch?.(()=>{}); }, SLIDE_MS);
 
-document.addEventListener("keydown",e=>{
-  if(e.key.toLowerCase()==="n") next();
+/* 快捷鍵：按 N 立即下一張（現場測試很方便） */
+document.addEventListener("keydown", (e)=>{
+  if (e.key.toLowerCase()==="n") showNext(false);
 });
 
-(async()=>{
+/* SSE：新照片優先播 */
+function startSSE(){
+  const es = new EventSource("/api/stream");
+  es.addEventListener("new", (evt)=>{
+    try{
+      const msg = JSON.parse(evt.data);
+      if (msg && msg.item){
+        items.unshift(msg.item);
+        showNext(true);
+      }
+    }catch{}
+  });
+}
+
+(async ()=>{
   await loadList();
-  next();
+  showNext(true);
+  startSSE();
 })();
 </script>
 </body>
