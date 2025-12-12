@@ -6,8 +6,28 @@
   <title>照片牆</title>
   <style>
     html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
-    #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
-    img{max-width:100%;max-height:100%;object-fit:contain}
+    #stage{position:fixed;inset:0;overflow:hidden;background:#000}
+
+    /* 兩張圖疊在一起：一張顯示中，一張做轉場 */
+    .layer{
+      position:absolute; inset:0;
+      display:flex; align-items:center; justify-content:center;
+      will-change: transform, opacity;
+      opacity:0;
+      transform: translate3d(0,0,0) scale(1);
+    }
+    .layer.show{ opacity:1; }
+
+    .layer img{
+      max-width:100%;
+      max-height:100%;
+      object-fit:contain;
+      user-select:none;
+      -webkit-user-drag:none;
+      pointer-events:none;
+    }
+
+    /* 下方字幕 */
     #caption{
       position:fixed;left:0;right:0;bottom:0;
       padding:10px 14px;
@@ -16,80 +36,225 @@
     }
     #hint{
       position:fixed;top:10px;left:10px;
-      font-size:12px;color:#ddd;opacity:.8
+      font-size:12px;color:#ddd;opacity:.85;
+      background:rgba(0,0,0,.35); padding:6px 10px; border-radius:999px;
     }
+
+    /* ===== 轉場核心：用 CSS 變數控制時間 ===== */
+    :root{
+      --dur: 900ms;         /* 轉場時間 */
+      --ease: cubic-bezier(.2,.8,.2,1);
+      --fadeOnly: 1;        /* 1=純淡入淡出; 0=可飛入 */
+    }
+
+    /* 進場/出場的 class 會在 JS 動態套用 */
+    .enter{ transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease); }
+    .exit { transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease); }
+
+    /* ===== Enter（進場）初始姿勢 ===== */
+    .from-right{ transform: translate3d(12%,0,0) scale(1.00); }
+    .from-left { transform: translate3d(-12%,0,0) scale(1.00); }
+    .from-top  { transform: translate3d(0,-12%,0) scale(1.00); }
+    .from-bottom{transform: translate3d(0,12%,0) scale(1.00); }
+    .zoom-in   { transform: translate3d(0,0,0) scale(0.92); }
+    .zoom-out  { transform: translate3d(0,0,0) scale(1.08); }
+
+    /* ===== Enter（進場）到位姿勢 ===== */
+    .to-center{ transform: translate3d(0,0,0) scale(1); opacity:1; }
+
+    /* ===== Exit（出場）到位姿勢 ===== */
+    .to-left   { transform: translate3d(-10%,0,0) scale(1.00); opacity:0; }
+    .to-right  { transform: translate3d(10%,0,0) scale(1.00); opacity:0; }
+    .to-top    { transform: translate3d(0,-10%,0) scale(1.00); opacity:0; }
+    .to-bottom { transform: translate3d(0,10%,0) scale(1.00); opacity:0; }
+    .fade-out  { transform: translate3d(0,0,0) scale(1.00); opacity:0; }
+    .shrink-out{ transform: translate3d(0,0,0) scale(0.96); opacity:0; }
+    .grow-out  { transform: translate3d(0,0,0) scale(1.04); opacity:0; }
+
+    /* 小型防抖：避免某些瀏覽器重排造成閃一下 */
+    #stage, .layer, .layer img { backface-visibility:hidden; -webkit-font-smoothing:antialiased; }
   </style>
 </head>
 <body>
-  <div id="wrap">
-    <img id="img" alt="" />
+  <div id="stage">
+    <div id="layerA" class="layer show"><img id="imgA" alt=""></div>
+    <div id="layerB" class="layer"><img id="imgB" alt=""></div>
   </div>
+
   <div id="hint">提示：按 F11 全螢幕；照片會自動更新</div>
-  <div id="caption"></div>
+  <div id="caption">載入中…</div>
 
 <script>
-const imgEl = document.getElementById('img');
+/** ====== 你可調參數 ====== */
+const SLIDE_MS = 2000;    // 每張停留時間
+const TRANS_MS = 900;     // 轉場時間（跟 CSS --dur 一致）
+const POLL_MS  = 10000;   // 保底輪詢（SSE 斷線仍能更新）
+const RANDOM_EFFECTS = true; // true=每張隨機效果；false=只用純淡入淡出
+
+document.documentElement.style.setProperty('--dur', TRANS_MS + 'ms');
+
 const capEl = document.getElementById('caption');
+const layerA = document.getElementById('layerA');
+const layerB = document.getElementById('layerB');
+const imgA = document.getElementById('imgA');
+const imgB = document.getElementById('imgB');
 
 let items = [];
 let idx = 0;
-let slideMs = 4000; // 每張停留時間
+let showingA = true;
+let inTransition = false;
+let lastListHash = "";
 
+/** ====== 拉清單 ====== */
 async function loadList() {
   const res = await fetch("/api/photos", { cache: "no-store" });
   const data = await res.json();
   if (!data.ok) return;
-  items = data.items || [];
-  // 新的在前面
-  if (idx >= items.length) idx = 0;
+
+  const list = data.items || [];
+  // 用 public_id 串成 hash，避免無意義重設
+  const hash = list.map(x => x.public_id).join("|");
+  if (hash !== lastListHash) {
+    lastListHash = hash;
+    items = list;
+    if (idx >= items.length) idx = 0;
+  }
 }
 
-function showCurrent() {
+/** ====== 字幕 ====== */
+function captionOf(it){
+  const who = it.uploader ? `（${it.uploader} 上傳）` : "";
+  return `${new Date(it.created_at).toLocaleString()} ${who}`;
+}
+
+/** ====== 效果池：IN / OUT ====== */
+const enters = ["fade", "from-right", "from-left", "from-top", "from-bottom", "zoom-in", "zoom-out"];
+const exits  = ["fade-out", "to-left", "to-right", "to-top", "to-bottom", "shrink-out", "grow-out"];
+
+function pick(arr){ return arr[Math.floor(Math.random() * arr.length)]; }
+
+function chooseEffect(){
+  if (!RANDOM_EFFECTS) {
+    return { enter: "fade", exit: "fade-out" };
+  }
+  // 讓「fade」出現比例高一點，畫面會比較舒服
+  const enter = (Math.random() < 0.45) ? "fade" : pick(enters.slice(1));
+  const exit  = (Math.random() < 0.55) ? "fade-out" : pick(exits.slice(1));
+  return { enter, exit };
+}
+
+/** ====== 套用轉場（真正 Crossfade + 飛入/縮放） ====== */
+function clearClasses(el){
+  el.className = "layer";
+}
+
+function applyEnter(el, enterClass){
+  clearClasses(el);
+  el.classList.add("layer", "enter");
+  el.style.opacity = "0";
+
+  if (enterClass === "fade") {
+    // 只淡入：保持中心
+    el.style.transform = "translate3d(0,0,0) scale(1)";
+  } else {
+    el.classList.add(enterClass);
+  }
+
+  // 強制 reflow，確保 transition 生效
+  void el.offsetWidth;
+
+  el.classList.add("to-center");
+  el.style.opacity = "1";
+}
+
+function applyExit(el, exitClass){
+  // 出場：已在 show 狀態，套 exit class 讓它離場 + 淡出
+  el.classList.add("exit");
+  if (exitClass === "fade-out") el.classList.add("fade-out");
+  else el.classList.add(exitClass);
+  el.style.opacity = "0";
+}
+
+async function showNext(forceNewest = false){
+  if (inTransition) return;
   if (!items.length) {
-    imgEl.removeAttribute("src");
     capEl.textContent = "目前沒有照片";
+    imgA.removeAttribute("src");
+    imgB.removeAttribute("src");
     return;
   }
+
+  if (forceNewest) idx = 0;
+
   const it = items[idx % items.length];
   idx++;
 
-  imgEl.src = it.url;
-  const who = it.uploader ? `（${it.uploader} 上傳）` : "";
-  capEl.textContent = `${new Date(it.created_at).toLocaleString()} ${who}`;
+  const nextImgEl = showingA ? imgB : imgA;
+  const nextLayer = showingA ? layerB : layerA;
+  const curLayer  = showingA ? layerA : layerB;
+
+  // 先把下一張 src 設好
+  nextImgEl.src = it.url;
+
+  // 更新字幕（立刻顯示）
+  capEl.textContent = captionOf(it);
+
+  const { enter, exit } = chooseEffect();
+
+  inTransition = true;
+
+  // 讓下一張圖層可見並進場
+  nextLayer.style.opacity = "0";
+  nextLayer.style.transform = "translate3d(0,0,0) scale(1)";
+  nextLayer.classList.add("show");
+  applyEnter(nextLayer, enter);
+
+  // 同時讓目前圖層出場（crossfade 的關鍵：兩張同時存在）
+  applyExit(curLayer, exit);
+
+  // 轉場結束後，清理舊層，交換顯示狀態
+  setTimeout(() => {
+    // 舊層重置（避免 class 累積）
+    clearClasses(curLayer);
+    curLayer.classList.remove("show");
+    curLayer.style.opacity = "0";
+    curLayer.style.transform = "translate3d(0,0,0) scale(1)";
+
+    // 新層固定為 show
+    clearClasses(nextLayer);
+    nextLayer.classList.add("show");
+    nextLayer.style.opacity = "1";
+    nextLayer.style.transform = "translate3d(0,0,0) scale(1)";
+
+    showingA = !showingA;
+    inTransition = false;
+  }, TRANS_MS + 30);
 }
 
-// 保底輪詢：每 10 秒更新清單（避免 SSE 斷線還是能更新）
-setInterval(() => {
-  loadList().catch(()=>{});
-}, 10000);
+/** ====== 輪詢 + 輪播 ====== */
+setInterval(() => { loadList().catch(()=>{}); }, POLL_MS);
+setInterval(() => { showNext(false).catch?.(()=>{}); }, SLIDE_MS);
 
-// 輪播
-setInterval(() => {
-  showCurrent();
-}, slideMs);
-
-// SSE 即時新增：收到 new 就把它插到最前面
-function startSSE() {
+/** ====== SSE：有新照片就立刻插到最前面並優先播放 ====== */
+function startSSE(){
   const es = new EventSource("/api/stream");
   es.addEventListener("new", (evt) => {
-    try {
+    try{
       const msg = JSON.parse(evt.data);
       if (msg && msg.item) {
+        // 插到最前面
         items.unshift(msg.item);
-        // 立刻顯示最新一張（更有即時感）
-        idx = 0;
-        showCurrent();
+        // 立刻播放最新
+        showNext(true);
       }
-    } catch {}
+    }catch{}
   });
-  es.onerror = () => {
-    // 斷線就讓輪詢頂著，不用做太多
-  };
 }
 
+/** ====== 初始化 ====== */
 (async function init(){
   await loadList();
-  showCurrent();
+  await showNext(true);
   startSSE();
 })();
 </script>
