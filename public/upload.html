@@ -51,14 +51,16 @@ const btn = document.getElementById('btn');
 const statusEl = document.getElementById('status');
 const wrap = document.getElementById('progressWrap');
 const bar = document.getElementById('bar');
-// const pinEl = document.getElementById('pin');
+const pinEl = document.getElementById('pin');
 
 function setStatus(msg){ statusEl.textContent = msg; }
 
 btn.addEventListener('click', async () => {
   const uploader = uploaderEl.value.trim();
   const files = Array.from(filesEl.files || []);
-
+  const pin = pinEl.value.trim();
+  if (!pin) return setStatus("請輸入活動 PIN。");
+  
   if (!uploader) return setStatus("請先輸入上傳者名字。");
   if (files.length === 0) return setStatus("請先選擇照片。");
   if (files.length > MAX_FILES) return setStatus(`一次最多只能上傳 ${MAX_FILES} 張，請重新選。`);
@@ -81,6 +83,7 @@ btn.addEventListener('click', async () => {
   try {
     const fd = new FormData();
     fd.append("uploader", uploader);
+    fd.append("pin", pin);
     // 如果你有 PIN：fd.append("pin", pinEl.value.trim());
 
     for (const f of files) {
