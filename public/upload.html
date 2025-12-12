@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>畢業旅行照片上傳</title>
+  <style>
+    body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:16px;background:#f5f5f5}
+    .card{max-width:520px;margin:0 auto;background:#fff;border-radius:14px;box-shadow:0 2px 8px rgba(0,0,0,.08);padding:16px}
+    h1{font-size:20px;margin:0 0 8px;text-align:center}
+    .desc{font-size:13px;color:#555;text-align:center;margin:0 0 14px;line-height:1.5}
+    input,button{width:100%;box-sizing:border-box}
+    input{padding:10px;border:1px solid #ddd;border-radius:10px;margin:8px 0}
+    button{padding:12px;border:none;border-radius:999px;background:#0b5fff;color:#fff;font-size:16px;cursor:pointer}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    #status{margin-top:10px;font-size:13px;color:#333;min-height:18px}
+    #progressWrap{margin-top:10px;height:12px;background:#eee;border-radius:999px;overflow:hidden;display:none}
+    #bar{height:100%;width:0%;background:#19a34a;transition:width .15s ease}
+    .small{font-size:12px;color:#666;margin-top:10px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>畢業旅行照片上傳</h1>
+    <p class="desc">請輸入上傳者名字後選照片。一次最多 5 張（只收照片，不收影片）。</p>
+
+    <input id="uploader" type="text" placeholder="上傳者名字（例：小明媽媽）" />
+    <!-- accept image/* 大多數手機會直接不讓你選到影片 -->
+    <input id="files" type="file" accept="image/*" multiple />
+
+    <!-- 如果你有設定 PHOTO_WALL_PIN（可選），可把下面 PIN 欄位打開 -->
+    <!-- <input id="pin" type="password" placeholder="活動 PIN（若主辦有設定）" /> -->
+
+    <button id="btn">開始上傳</button>
+
+    <div id="progressWrap"><div id="bar"></div></div>
+    <div id="status"></div>
+
+    <div class="small">
+      提醒：請挑選清楚的照片，避免一次上傳太多造成等待。
+    </div>
+  </div>
+
+<script>
+const MAX_FILES = 5;
+const MAX_MB = 10; // 對應後端 MAX_FILE_MB（保守提示）
+
+const uploaderEl = document.getElementById('uploader');
+const filesEl = document.getElementById('files');
+const btn = document.getElementById('btn');
+const statusEl = document.getElementById('status');
+const wrap = document.getElementById('progressWrap');
+const bar = document.getElementById('bar');
+// const pinEl = document.getElementById('pin');
+
+function setStatus(msg){ statusEl.textContent = msg; }
+
+btn.addEventListener('click', async () => {
+  const uploader = uploaderEl.value.trim();
+  const files = Array.from(filesEl.files || []);
+
+  if (!uploader) return setStatus("請先輸入上傳者名字。");
+  if (files.length === 0) return setStatus("請先選擇照片。");
+  if (files.length > MAX_FILES) return setStatus(`一次最多只能上傳 ${MAX_FILES} 張，請重新選。`);
+
+  // 前端再防呆一次：擋影片/大檔
+  for (const f of files) {
+    if (!f.type.startsWith("image/")) {
+      return setStatus(`「${f.name}」不是照片，請重新選擇。`);
+    }
+    if (f.size > MAX_MB * 1024 * 1024) {
+      return setStatus(`「${f.name}」超過 ${MAX_MB}MB，請換小一點的照片。`);
+    }
+  }
+
+  btn.disabled = true;
+  wrap.style.display = 'block';
+  bar.style.width = '0%';
+  setStatus(`準備上傳 ${files.length} 張...`);
+
+  try {
+    const fd = new FormData();
+    fd.append("uploader", uploader);
+    // 如果你有 PIN：fd.append("pin", pinEl.value.trim());
+
+    for (const f of files) {
+      fd.append("files", f, f.name);
+    }
+
+    // 進度條：用 XMLHttpRequest 才能拿 upload progress
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/upload", true);
+
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable) {
+          const pct = Math.round((evt.loaded / evt.total) * 100);
+          bar.style.width = pct + "%";
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(xhr.responseText || "upload_failed");
+      };
+
+      xhr.onerror = () => reject("network_error");
+      xhr.send(fd);
+    });
+
+    bar.style.width = "100%";
+    setStatus("上傳完成！謝謝～");
+    filesEl.value = "";
+  } catch (e) {
+    console.error(e);
+    setStatus("上傳失敗，請再試一次（或換 Wi-Fi/訊號較好的位置）。");
+  } finally {
+    btn.disabled = false;
+    setTimeout(()=>{ wrap.style.display = 'none'; bar.style.width='0%'; }, 1500);
+  }
+});
+</script>
+</body>
+</html>
